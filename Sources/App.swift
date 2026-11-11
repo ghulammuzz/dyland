@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 final class IslandPanel: NSPanel {
@@ -12,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: NSStatusItem!
     private var panel: IslandPanel!
     private var settings: NSWindow!
-    private var pointerTimer: Timer?
+    private var hitRegionObservation: AnyCancellable?
     private var globalPointerMonitor: Any?
     private var localPointerMonitor: Any?
     private var topInset: CGFloat = 0
@@ -40,8 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateHitRegion()
             return event
         }
-        pointerTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateHitRegion() }
+        hitRegionObservation = model.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async { self?.updateHitRegion() }
         }
         model.start()
         if !UserDefaults.standard.bool(forKey: "launched") {
@@ -112,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let width = max(480, model.notchWidth + 112)
         panel.setFrame(NSRect(x: centerX - width / 2, y: screen.frame.maxY - 190 - topInset, width: width, height: 190), display: true)
+        updateHitRegion()
     }
     private func updateHitRegion() {
         guard let panel else { return }
@@ -121,7 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.setHovered(inside)
         // Keep menu-bar clicks outside physical notch available to other apps.
         let belowNotch = pointer.y < panel.frame.maxY - model.notchHeight
-        panel.ignoresMouseEvents = !inside || !belowNotch
+        let ignoresMouseEvents = !inside || !belowNotch
+        if panel.ignoresMouseEvents != ignoresMouseEvents { panel.ignoresMouseEvents = ignoresMouseEvents }
     }
     @objc func showSettings() {
         settings?.makeKeyAndOrderFront(nil)

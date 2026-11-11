@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 struct Session: Codable, Identifiable, Equatable {
     let id: String
@@ -185,6 +186,24 @@ func selfCheck() {
     model.paused = true
     model.apply(BridgeRead(snapshots: [snapshot([done])]))
     precondition(model.current == nil)
+    model.paused = false
+    let stable = BridgeRead(snapshots: [Snapshot(version: 1, updatedAt: now,
+        sessions: [Session(id: "ses_test", title: "Test", directory: "/Projects/test", updatedAt: now)],
+        notices: [], pending: [])])
+    model.apply(stable)
+    var publications = 0
+    let observation = model.objectWillChange.sink { publications += 1 }
+    for _ in 0..<100 { model.apply(stable) }
+    precondition(publications == 0, "Unchanged bridge reads must not invalidate SwiftUI")
+    model.paused = true
+    publications = 0
+    for _ in 0..<100 { model.apply(stable) }
+    precondition(publications == 0, "Paused bridge reads must not invalidate SwiftUI")
+    model.apply(BridgeRead())
+    publications = 0
+    for _ in 0..<100 { model.apply(BridgeRead()) }
+    precondition(publications == 0, "Disconnected bridge reads must not invalidate SwiftUI")
+    observation.cancel()
     for key in ["sessions", "sound"] {
         if let old = saved[key] { defaults.set(old, forKey: key) } else { defaults.removeObject(forKey: key) }
     }

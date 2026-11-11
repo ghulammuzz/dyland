@@ -22,7 +22,7 @@ struct IslandView: View {
                 if model.compactWorking {
                     HStack(spacing: 0) {
                         // Symbol effects can starve AppKit's main queue in an accessory app.
-                        TimelineView(.periodic(from: .now, by: 0.4)) { context in
+                        TimelineView(.animation(minimumInterval: 0.4, paused: reduceMotion)) { context in
                             HStack(spacing: 3) {
                                 ForEach(0..<3) { dot in
                                     Circle()

@@ -58,10 +58,13 @@ final class Model: ObservableObject {
     func toggle(_ id: String) {
         if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
     }
+    deinit { poll?.cancel() }
     func start() {
+        guard poll == nil else { return }
         poll = Task { [weak self] in
             while !Task.isCancelled {
                 let read = await Task.detached(priority: .utility) { Bridge.read() }.value
+                guard !Task.isCancelled, self != nil else { return }
                 self?.apply(read)
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -70,10 +73,11 @@ final class Model: ObservableObject {
     func apply(_ read: BridgeRead) {
         let now = Date().timeIntervalSince1970
         updateExpansion(now: now)
-        connected = !read.snapshots.isEmpty
-        if let problem = read.problem { self.problem = problem }
+        let isConnected = !read.snapshots.isEmpty
+        if connected != isConnected { connected = isConnected }
+        if let problem = read.problem, self.problem != problem { self.problem = problem }
         guard connected else {
-            if paused || current?.kind == "working" { current = nil }
+            if current != nil, paused || current?.kind == "working" { current = nil }
             if let current, !current.needsResponse, now > expires, !hovered { self.current = nil }
             return
         }
@@ -81,9 +85,13 @@ final class Model: ObservableObject {
         for session in read.snapshots.flatMap(\.sessions) {
             if session.updatedAt >= (latest[session.id]?.updatedAt ?? 0) { latest[session.id] = session }
         }
-        if connected { sessions = latest.values.sorted { $0.updatedAt > $1.updatedAt } }
-        pending = Dictionary(read.snapshots.flatMap(\.pending).map { (pendingKey($0), $0) }, uniquingKeysWith: { a, b in a.timestamp <= b.timestamp ? a : b })
-            .values.filter { selected.contains($0.sessionID) }.sorted { $0.timestamp > $1.timestamp }
+        let sessions = latest.values.sorted { $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt }
+        if self.sessions != sessions { self.sessions = sessions }
+        let requests = Dictionary(read.snapshots.flatMap(\.pending).map { (pendingKey($0), $0) }, uniquingKeysWith: { a, b in a.timestamp <= b.timestamp ? a : b })
+        let pending = requests.values.filter { selected.contains($0.sessionID) }.sorted {
+            $0.timestamp == $1.timestamp ? pendingKey($0) < pendingKey($1) : $0.timestamp > $1.timestamp
+        }
+        if self.pending != pending { self.pending = pending }
         let fresh = delivery.consume(read.snapshots, selected: selected, now: now)
         working.removeAll()
         for notice in read.snapshots.flatMap(\.notices).sorted(by: { $0.timestamp < $1.timestamp }) {
@@ -101,7 +109,7 @@ final class Model: ObservableObject {
             }
         }
         if paused {
-            current = nil
+            if current != nil { current = nil }
             return
         }
         if let urgent = fresh.last(where: { $0.needsResponse }) {
