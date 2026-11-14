@@ -90,6 +90,100 @@ test("atomic private writer, location hash, fail-open, and old cleanup preserves
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
+for (const type of ["session.deleted", "session.moved"]) {
+  test(`runtime: ${type} survives a blocked stale snapshot without losing live events`, async () => {
+    const home = mkdtempSync(join(tmpdir(), "dyland-runtime-"))
+    const events = []
+    let wake
+    let releaseSnapshot
+    let releaseNext
+    let snapshotStarted
+    let nextStarted
+    const blocked = new Promise((resolve) => { snapshotStarted = resolve })
+    const next = new Promise((resolve) => { nextStarted = resolve })
+    let calls = 0
+    let getCalls = 0
+    let movedBack = false
+    const records = [session(), session("ses_survivor")]
+    const ctx = {
+      location: { directory: "/work" },
+      session: {
+        async list() {
+          calls++
+          if (calls === 2) {
+            const wait = new Promise((resolve) => { releaseSnapshot = resolve })
+            snapshotStarted()
+            await wait
+          } else if (calls > 2) {
+            const wait = new Promise((resolve) => { releaseNext = resolve })
+            nextStarted()
+            await wait
+          }
+          return { data: records }
+        },
+        async get() {
+          getCalls++
+          return movedBack ? session() :
+            session("ses_root", { title: "secret destination", location: { directory: "/other" } })
+        },
+        form: { async list() { return [] } },
+      },
+      permission: { async list({ sessionID }) {
+        return sessionID === "ses_root" ? [{ id: "per_boot", sessionID }] : []
+      } },
+      event: { async *subscribe({ signal }) {
+        signal.addEventListener("abort", () => wake?.(), { once: true })
+        while (!signal.aborted) {
+          if (!events.length) await new Promise((resolve) => { wake = resolve })
+          while (events.length && !signal.aborted) yield events.shift()
+        }
+      } },
+    }
+    const close = startBridge(ctx, { home, heartbeat: 1_000_000, resync: 100 })
+    const read = () => JSON.parse(readFileSync(bridgePath("/work", home), "utf8"))
+    const until = async (check) => {
+      for (let i = 0; i < 100; i++) { if (check()) return; await sleep(10) }
+      assert.fail("bridge condition timed out")
+    }
+    try {
+      await until(() => read().pending.some((item) => item.requestID === "per_boot"))
+      await blocked
+      events.push(
+        { ...event(type, "remove"), location: { directory: type === "session.moved" ? "/other" : "/work" },
+          data: { sessionID: "ses_root", title: "secret event", content: "secret content" } },
+        event("permission.asked", "live", { sessionID: "ses_survivor", id: "per_live" }),
+      )
+      wake?.()
+      await until(() => read().pending.some((item) => item.requestID === "per_live"))
+      assert.deepEqual(read().sessions.map((item) => item.id), ["ses_survivor"])
+      assert.deepEqual(read().pending.map((item) => item.requestID), ["per_live"])
+      releaseSnapshot()
+      await next
+      events.push(event("session.execution.succeeded", "after-snapshot", { sessionID: "ses_survivor" }))
+      wake?.()
+      await until(() => read().notices.some((item) => item.id === "evt_after-snapshot"))
+      const result = read()
+      assert.deepEqual(result.sessions.map((item) => item.id), ["ses_survivor"])
+      assert.deepEqual(result.pending.map((item) => item.requestID), ["per_live"])
+      assert.deepEqual(result.notices.map((item) => item.id), ["evt_live", "evt_after-snapshot"])
+      assert.equal(getCalls, type === "session.moved" ? 1 : 0)
+      assert.ok(!JSON.stringify(result).includes("secret"))
+      if (type === "session.moved") {
+        movedBack = true
+        events.push(event("session.moved", "back"))
+        wake?.()
+        await until(() => read().sessions.some((item) => item.id === "ses_root"))
+        assert.deepEqual(read().pending.map((item) => item.requestID), ["per_live"])
+      }
+    } finally {
+      close()
+      releaseSnapshot?.()
+      releaseNext?.()
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+}
+
 test("runtime: global root cursor pages, live file publication, resync, and abort cleanup", async () => {
   const home = mkdtempSync(join(tmpdir(), "dyland-runtime-"))
   const events = []

@@ -20,7 +20,7 @@ Screenshots use the real SwiftUI views with demo session data, not private OpenC
 - Monitor only the sessions you select, with selections saved by session ID.
 - See working, completion, question, permission, error, and interruption states.
 - Keep pending questions and permission requests available until handled in OpenCode.
-- Click a notification to open its exact session in Ghostty.
+- Click a notification to open its exact session in Ghostty or a new Warp tab.
 - Play the bundled `dyland-sound.mp3` for events that need attention.
 - Expand details on hover without taking keyboard focus.
 - Blend into a display notch, or use the top center of a display without one.
@@ -40,7 +40,7 @@ Screenshots use the real SwiftUI views with demo session data, not private OpenC
 | Node.js | 24 or later, with npm, for plugin dependencies and tests |
 | Git | For cloning and updating the repository |
 | OpenCode | V2, tested with **2.1.1**; the plugin dependency is pinned to `@opencode/plugin@2.1.1` |
-| Ghostty | **1.3 or later**, with AppleScript enabled and Automation permission granted to Dyland |
+| Terminal | Ghostty **1.3 or later**, with AppleScript enabled and Automation permission granted to Dyland; or Warp Stable with [Tab Config and URI support](https://docs.warp.dev/terminal/windows/tab-configs/) |
 
 Use OpenCode's default local managed service for full question recovery and session routing.
 Remote services and `--standalone` are not supported for session redirects.
@@ -78,11 +78,12 @@ For manual plugin configuration and the bridge contract, see [`plugin/README.md`
 
 1. Open **Dyland > Sessions and Settings…** from the menu bar.
 2. Open a project in OpenCode and wait for **Connected** in Dyland.
-3. In **Sessions**, check each session you want to monitor.
+3. In **Sessions**, enable monitoring on each session card.
+   Use **All**, **Monitored**, or **Needs attention** to filter the list. Summary cards show monitored sessions, working agents, and pending requests.
    New sessions are not selected automatically.
 4. Choose **Preview Island** from the menu bar to test the island and sound without running an agent.
-5. In the **Settings** tab, set **Notification sound** and optionally enable **Launch at login**.
-6. Click a session's open button or a notification, then allow Dyland to control Ghostty when macOS requests Automation permission.
+5. Open **General** in the sidebar, choose **Terminal** (Ghostty or Warp), set **Notification sound**, and optionally enable **Launch at login**. Ghostty remains the default.
+6. Click a session's open button or a notification. When using Ghostty, allow Dyland to control it when macOS requests Automation permission.
 
 Launch the installed app again with:
 
@@ -93,6 +94,14 @@ open "$HOME/Applications/Dyland.app"
 Dyland lives in the menu bar rather than the Dock.
 Closing the settings window does not quit it.
 Manage login permission under **System Settings > General > Login Items** if macOS requires approval.
+
+### Spotify desktop lyrics
+
+Enable **General > Spotify > Spotify lyrics**, play a track in Spotify desktop, and allow Dyland to control Spotify when macOS asks. No Spotify OAuth or Premium API access is needed.
+
+The island shows artwork and one synced lyric line; hover for song details and click to open Spotify. Completion, question, permission, and error notifications temporarily replace music. Background working indicators do not interrupt music. Recovered pending requests also interrupt music until resolved or dismissed. Playback pauses and seeks are picked up on the next poll (0.5 seconds while playing, 2 seconds while paused or Spotify is closed). Polling stops when the feature is disabled or the Mac sleeps, and restarts after wake. Temporary Spotify errors retry automatically without disabling the feature; denied Automation permission requires re-enabling it.
+
+Lyrics come from [LRCLIB](https://lrclib.net), not Spotify. Enabling this feature sends track title, artist, album, and duration to LRCLIB and downloads artwork from Spotify's artwork URL. Missing, loading, or unavailable synced lyrics hide the lyric row entirely; artwork and song details remain available. Lyrics are fetched once per track change; replay another track to retry a failed lookup. If Automation is denied, allow Spotify under **System Settings > Privacy & Security > Automation > Dyland**, then re-enable the toggle.
 
 ## Usage and behavior
 
@@ -118,8 +127,9 @@ Sounds are limited to one every two seconds.
 
 New attention notifications expand for three seconds, then become compact unless hovered over.
 Regular notifications expire after seven seconds; hovering keeps them visible.
-While execution is active, the compact island widens horizontally and shows a small animated indicator to the left of the notch, without a panel below it.
-Hover still expands the usual details, and clicking still opens the session in Ghostty.
+The compact island stays at notch height: Dyland's custom A1 capsule mascot sits on the left, and a status symbol and activity count sit on the right. Choose **Capsule** or **Lilac Ghost** under **General > Appearance > Mascot**; the selection is saved and applies immediately. Both mascots are drawn natively without a square background: their eyes narrow for completion or pause, and open wider for requests or errors. It blinks occasionally, glances gently while working, and looks attentive on hover. Reduce Motion disables mascot movement; pause keeps it still. Idle animation schedules frames only around each blink; working glances update at 20 fps. Settings are created on demand and released when closed, and unchanged bridge data does not trigger UI redraws. System typography and native SF Symbols remain for controls, reserving status color for pending requests and errors. Expanded labels explain each state without relying on color or facial expressions. There is no notification card hanging below the notch.
+Hover expands a quiet session list with up to three working sessions or pending requests. One mascot and status appear in the header alongside Settings and Dismiss controls; there is no repeated footer or terminal button. Each row shows its title and project folder and opens its own exact session. Mixed request types retain a short per-row label. Working activity uses three stationary dots that fade in sequence over 1.5 seconds, rather than a spinning loader. Reduce Motion keeps the dots still.
+Displays without a notch use a detached rounded capsule. Concave shoulders join the island to a physical notch; a short hover grace period prevents accidental collapse when moving onto a row.
 Questions and permission requests stay available while pending, including when compact.
 Dismissing the island hides that notification; it does not answer a question or grant permission.
 Dismissed pending requests remain accessible through the menu and session list.
@@ -128,6 +138,14 @@ The overlay does not take keyboard focus, and transparent space outside it passe
 Dyland prefers a display with a notch and otherwise uses the top center of the first display.
 The island uses a solid black surface; settings follow the system appearance.
 Reduce Motion removes size springs and uses brief content transitions.
+
+### Opening sessions in Warp
+
+Choose **General > Open sessions > Terminal > Warp**. Dyland verifies the session against the default local service, then opens `opencode --session` in a **new Warp tab on every click**. It does not identify or focus an existing Warp tab, and does not require Automation or Accessibility permission.
+
+Warp Stable must support Tab Configs and the `warp://tab_config/` URI. Dyland creates a private `~/.warp/tab_configs/dyland_<sessionID>.toml` file containing the project directory and startup command, updating the same file for later clicks. These configs remain available in Warp's tab menu; remove them manually when no longer needed. Project and executable paths containing `{{` are rejected because Warp interprets them as templates. Warp Preview is not supported.
+
+The status reports that a tab was requested, not that Warp acknowledged loading the session. Older Warp releases need an update for this integration.
 
 ### Opening sessions in Ghostty
 
@@ -158,7 +176,7 @@ Session redirects support only the default local service, not remote servers or 
 
 ## Privacy and sound
 
-Dyland's bridge and terminal-routing files stay under `~/Library/Application Support/Dyland/`.
+Dyland's bridge and Ghostty terminal-routing files stay under `~/Library/Application Support/Dyland/`. When Warp is selected, generated Tab Config files also live under `~/.warp/tab_configs/`.
 Dyland adds no HTTP listener, socket server, analytics, or hosted notification service.
 The plugin reads OpenCode events and metadata; question recovery may query the existing local OpenCode service, and session opening invokes the local OpenCode CLI and Ghostty AppleScript.
 This does not change OpenCode's own model-provider or network behavior.
@@ -173,7 +191,8 @@ The local files contain these fields:
 | `routes/<UUID>.json` | TUI instance `id`, `sessionIDs`, optional `currentSessionID` and `launchToken`, `updatedAt`, `directory` |
 | Route request and acknowledgement files | `sessionID`, `nonce` |
 | Route terminal binding files | Ghostty `terminalID` |
-| macOS app preferences | Selected session IDs, sound preference, first-launch flag, and settings window placement |
+| Warp `dyland_<sessionID>.toml` configs | Session ID, project directory, OpenCode executable path and startup command |
+| macOS app preferences | Selected session IDs, terminal choice, sound preference, first-launch flag, and settings window placement |
 
 Bridge filenames use the first 16 hexadecimal characters of the SHA-256 hash of the exact project directory.
 Bridge and routing directories are created with mode `0700`, and JSON files are written atomically with mode `0600`.
@@ -238,6 +257,13 @@ npm ci --prefix plugin --ignore-scripts
 ./dist/Dyland.app/Contents/MacOS/Dyland --self-check
 npm test --prefix plugin
 npm run test:e2e --prefix plugin
+```
+
+For a native animation and click-through geometry check on a graphical macOS session:
+
+```sh
+swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,TerminalRouter,Views}.swift scripts/check-island.swift -o "$TMPDIR/dyland-island-check"
+"$TMPDIR/dyland-island-check"
 ```
 
 Install plugin dependencies with `npm ci` before running either plugin test command.
