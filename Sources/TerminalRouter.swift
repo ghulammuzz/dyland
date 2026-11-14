@@ -189,7 +189,7 @@ actor TerminalRouter {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static func findOpenCode() throws -> String {
+    static func findOpenCode() throws -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser
         var candidates = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
             .filter { $0.hasPrefix("/") }.map { String($0) + "/opencode" }
@@ -238,7 +238,7 @@ actor TerminalRouter {
         guard data.count <= 2_000_000 else { throw Failure(message: "Process output is too large.") }
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard process.terminationStatus == 0 else {
-            throw Failure(message: "Failed to open session: \(text.prefix(1_000))")
+            throw Failure(message: "OpenCode operation failed: \(text.prefix(1_000))")
         }
         return text
     }

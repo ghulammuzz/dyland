@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 struct Session: Codable, Identifiable, Equatable {
     let id: String
@@ -279,11 +280,51 @@ func selfCheck() {
     precondition(model.islandNotices.allSatisfy { model.selected.contains($0.sessionID) })
     model.setHovered(true)
     precondition(model.islandHeight == model.notchHeight + 146)
+    let stable = BridgeRead(snapshots: [Snapshot(version: 1, updatedAt: now,
+        sessions: [Session(id: "ses_test", title: "Test", directory: "/Projects/test", updatedAt: now)],
+        notices: [], pending: [])])
+    model.apply(stable)
+    var publications = 0
+    let stableObservation = model.objectWillChange.sink { publications += 1 }
+    for _ in 0..<100 { model.apply(stable) }
+    precondition(publications == 0, "Unchanged bridge reads must not invalidate SwiftUI")
+    model.paused = true
+    publications = 0
+    for _ in 0..<100 { model.apply(stable) }
+    precondition(publications == 0, "Paused bridge reads must not invalidate SwiftUI")
+    model.apply(BridgeRead())
+    publications = 0
+    for _ in 0..<100 { model.apply(BridgeRead()) }
+    precondition(publications == 0, "Disconnected bridge reads must not invalidate SwiftUI")
+    stableObservation.cancel()
+    model.paused = false
+    model.sound = false
+    model.selected = ["ses_test", "ses_keep"]
+    let keep = Session(id: "ses_keep", title: "Keep", directory: "/Projects/keep", updatedAt: now)
+    let deletionSnapshot = Snapshot(version: 1, updatedAt: now, sessions: stable.snapshots[0].sessions + [keep],
+        notices: [active], pending: [question])
+    model.apply(BridgeRead(snapshots: [deletionSnapshot]))
+    precondition(model.deletionBlockReason(stable.snapshots[0].sessions[0]) != nil)
+    model.selected.remove("ses_test")
+    model.apply(BridgeRead(snapshots: [Snapshot(version: 1, updatedAt: now,
+        sessions: deletionSnapshot.sessions, notices: [], pending: [question])]))
+    precondition(model.pending.isEmpty && model.deletionBlockReason(stable.snapshots[0].sessions[0]) != nil,
+        "Unmonitored pending sessions must remain protected")
+    model.forgetDeletedSessions(["ses_test"])
+    for _ in 0..<3 { model.apply(BridgeRead(snapshots: [deletionSnapshot])) }
+    precondition(model.sessions == [keep] && model.selected == ["ses_keep"])
+    precondition(model.pending.isEmpty && model.current == nil && model.activity(for: "ses_test") == nil)
+    precondition(model.deletionBlockReason(keep) == nil)
+    model.deletingSessionID = "ses_other"
+    precondition(model.deletionBlockReason(keep) != nil)
+    model.deletingSessionID = nil
+    model.apply(BridgeRead())
+    precondition(model.deletionBlockReason(keep) != nil)
     for key in ["sessions", "sound", "mascot"] {
         if let old = saved[key] { defaults.set(old, forKey: key) } else { defaults.removeObject(forKey: key) }
     }
-    do { try TerminalRouter.selfCheck() }
-    catch { fatalError("TerminalRouter self-check failed: \(error)") }
+    do { try TerminalRouter.selfCheck(); try SessionDeletion.selfCheck() }
+    catch { fatalError("OpenCode integration self-check failed: \(error)") }
     if Bundle.main.bundleURL.pathExtension == "app" {
         guard let iconURL = Bundle.main.url(forResource: "Dyland", withExtension: "icns"),
               let icon = NSImage(contentsOf: iconURL), !icon.representations.isEmpty else {

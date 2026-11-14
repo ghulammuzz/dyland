@@ -1,5 +1,5 @@
 // Run from the repository root:
-// swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,TerminalRouter,Views}.swift scripts/check-settings.swift -o "$TMPDIR/dyland-settings-check" && "$TMPDIR/dyland-settings-check"
+// swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,SessionDeletion,Spotify,TerminalRouter,Views}.swift scripts/check-settings.swift -o "$TMPDIR/dyland-settings-check" && "$TMPDIR/dyland-settings-check"
 import AppKit
 import SwiftUI
 

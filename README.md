@@ -139,6 +139,22 @@ Dyland prefers a display with a notch and otherwise uses the top center of the f
 The island uses a solid black surface; settings follow the system appearance.
 Reduce Motion removes size springs and uses brief content transitions.
 
+### Deleting OpenCode sessions
+
+Use the trash button on a session card, then confirm **Delete Session** after checking its title, directory, and session ID.
+Deletion permanently removes that session and all child sessions from OpenCode; Dyland provides no undo.
+Cancel leaves the session and monitoring selection unchanged.
+
+Dyland disables deletion while disconnected, opening another session, or showing work or a pending request for that session.
+Before deletion, it validates the root session and directory against the default local managed service, reads every child session, and checks pending forms, permission requests, and `session.active` for the entire tree.
+If validation fails or any session in that tree is active or has a pending request, deletion stops.
+These checks and deletion are separate API calls, not an atomic idle-only operation; avoid starting work in that tree while confirming deletion.
+Remote and standalone services are not supported for deletion.
+
+After a successful API response, Dyland clears the deleted sessions from monitoring, notifications, and history, and ignores stale bridge snapshots for those IDs until quit.
+If an operation fails or times out, refresh OpenCode before retrying because the server might already have completed deletion.
+Dyland does not directly edit session databases, bridge files, project files, or worktrees.
+
 ### Opening sessions in Warp
 
 Choose **General > Open sessions > Terminal > Warp**. Dyland verifies the session against the default local service, then opens `opencode --session` in a **new Warp tab on every click**. It does not identify or focus an existing Warp tab, and does not require Automation or Accessibility permission.
@@ -259,10 +275,19 @@ npm test --prefix plugin
 npm run test:e2e --prefix plugin
 ```
 
+To exercise the Swift deletion integration through the CLI against that isolated E2E server:
+
+```sh
+swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,SessionDeletion,Spotify,TerminalRouter,Views}.swift scripts/check-session-deletion.swift -o "$TMPDIR/dyland-delete-check"
+DYLAND_DELETE_CHECK="$TMPDIR/dyland-delete-check" npm run test:e2e --prefix plugin
+```
+
+This deletes only the temporary test session tree created on the isolated server.
+
 For a native animation and click-through geometry check on a graphical macOS session:
 
 ```sh
-swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,TerminalRouter,Views}.swift scripts/check-island.swift -o "$TMPDIR/dyland-island-check"
+swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,SessionDeletion,Spotify,TerminalRouter,Views}.swift scripts/check-island.swift -o "$TMPDIR/dyland-island-check"
 "$TMPDIR/dyland-island-check"
 ```
 
