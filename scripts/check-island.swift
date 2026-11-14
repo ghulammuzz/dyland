@@ -1,5 +1,5 @@
 // Run from the repo root on macOS:
-// swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,TerminalRouter,Views}.swift scripts/check-island.swift -o "$TMPDIR/dyland-island-check" && "$TMPDIR/dyland-island-check"
+// swiftc -parse-as-library Sources/{Bridge,DylandMark,Model,SessionDeletion,Spotify,TerminalRouter,Views}.swift scripts/check-island.swift -o "$TMPDIR/dyland-island-check" && "$TMPDIR/dyland-island-check"
 import AppKit
 import SwiftUI
 

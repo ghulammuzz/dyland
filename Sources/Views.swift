@@ -299,6 +299,7 @@ struct SettingsView: View {
     @State private var search = ""
     @State private var tab = 0
     @State private var filter = 0
+    @State private var sessionToDelete: Session?
 
     init(model: Model, initialTab: Int = 0) {
         self.model = model
@@ -358,6 +359,16 @@ struct SettingsView: View {
                         .textSelection(.enabled).font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 }
+                if let status = model.deletionStatus {
+                    HStack {
+                        if model.deletingSessionID != nil { ProgressView().controlSize(.small) }
+                        Text(status).textSelection(.enabled)
+                        Spacer()
+                        if model.deletingSessionID == nil {
+                            Button("Dismiss") { model.deletionStatus = nil }
+                        }
+                    }.font(.callout).padding(12)
+                }
                 if let problem = model.problem {
                     HStack {
                         Image(systemName: "exclamationmark.triangle")
@@ -369,6 +380,18 @@ struct SettingsView: View {
             }.background(.regularMaterial)
         }
         .frame(minWidth: 760, minHeight: 560)
+        .alert("Delete OpenCode session?", isPresented: Binding(
+            get: { sessionToDelete != nil }, set: { if !$0 { sessionToDelete = nil } }
+        ), presenting: sessionToDelete) { session in
+            Button("Cancel", role: .cancel) { sessionToDelete = nil }
+            Button("Delete Session", role: .destructive) {
+                sessionToDelete = nil
+                model.delete(session)
+            }
+            .disabled(model.deletionBlockReason(session) != nil)
+        } message: { session in
+            Text("\(session.title.isEmpty ? "Untitled session" : session.title)\n\(session.directory)\n\(session.id)\n\nThis permanently deletes the session and all child sessions from OpenCode. This cannot be undone in Dyland. OpenCode activity is checked before deletion. Do not start work in this session or its children while deleting.")
+        }
     }
 
     private func navigation(_ title: String, symbol: String, destination: Int) -> some View {
@@ -475,9 +498,15 @@ struct SettingsView: View {
             }
             Spacer(minLength: 0)
             Button { model.open(session) } label: { Image(systemName: "arrow.up.right") }
-                .disabled(model.openingSession)
+                .disabled(model.openingSession || model.deletingSessionID != nil)
                 .accessibilityLabel("Open \(title) in \(model.terminal.rawValue)")
                 .help("Open session in \(model.terminal.rawValue)")
+            Button(role: .destructive) { sessionToDelete = session } label: {
+                Image(systemName: "trash")
+            }
+            .disabled(model.deletionBlockReason(session) != nil)
+            .accessibilityLabel("Delete \(title) from OpenCode")
+            .help(model.deletionBlockReason(session) ?? "Permanently delete session and all child sessions from OpenCode")
         }
         .padding(14)
     }

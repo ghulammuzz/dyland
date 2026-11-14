@@ -35,6 +35,10 @@ final class Model: ObservableObject {
     @Published var problem: String?
     @Published var routingStatus: String?
     @Published var openingSession = false
+    @Published var deletingSessionID: String?
+    @Published var deletionStatus: String?
+    private var deletedSessionIDs = Set<String>()
+    private var pendingSessionIDs = Set<String>()
     @Published var current: Notice? { didSet { if current == nil { autoExpanded = false } } }
     @Published var pending: [Notice] = []
     @Published var history: [Notice] = []
@@ -129,6 +133,12 @@ final class Model: ObservableObject {
         }
     }
     func apply(_ read: BridgeRead) {
+        let read = BridgeRead(snapshots: read.snapshots.map { snapshot in
+            Snapshot(version: snapshot.version, updatedAt: snapshot.updatedAt,
+                sessions: snapshot.sessions.filter { !deletedSessionIDs.contains($0.id) },
+                notices: snapshot.notices.filter { !deletedSessionIDs.contains($0.sessionID) },
+                pending: snapshot.pending.filter { !deletedSessionIDs.contains($0.sessionID) })
+        }, problem: read.problem)
         let now = Date().timeIntervalSince1970
         updateExpansion(now: now)
         let isConnected = !read.snapshots.isEmpty
@@ -145,6 +155,8 @@ final class Model: ObservableObject {
         }
         let sessions = latest.values.sorted { $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt }
         if self.sessions != sessions { self.sessions = sessions }
+        let pendingIDs = Set(read.snapshots.flatMap(\.pending).map(\.sessionID))
+        if pendingSessionIDs != pendingIDs { objectWillChange.send(); pendingSessionIDs = pendingIDs }
         let requests = Dictionary(read.snapshots.flatMap(\.pending).map { (pendingKey($0), $0) }, uniquingKeysWith: { a, b in a.timestamp <= b.timestamp ? a : b })
         let pending = requests.values.filter { selected.contains($0.sessionID) }.sorted {
             $0.timestamp == $1.timestamp ? pendingKey($0) < pendingKey($1) : $0.timestamp > $1.timestamp
@@ -233,8 +245,45 @@ final class Model: ObservableObject {
         guard let current, let session = session(current.sessionID) else { openSettings?(); return }
         open(session)
     }
+    func deletionBlockReason(_ session: Session) -> String? {
+        if deletingSessionID != nil { return "A session deletion is already in progress." }
+        if openingSession { return "Wait for the session to open." }
+        if !connected { return "Connect OpenCode before deleting a session." }
+        if self.session(session.id) != session { return "Session changed. Refresh and try again." }
+        if working[session.id] != nil || pendingSessionIDs.contains(session.id) {
+            return "Wait for this session to finish working or resolve its pending request."
+        }
+        return nil
+    }
+    func delete(_ session: Session) {
+        if let reason = deletionBlockReason(session) { problem = reason; return }
+        deletingSessionID = session.id
+        deletionStatus = "Checking and deleting session…"
+        Task {
+            defer { deletingSessionID = nil }
+            do {
+                let ids = try await SessionDeletion.remove(session)
+                forgetDeletedSessions(ids)
+                deletionStatus = "Session and its child sessions deleted from OpenCode."
+            } catch {
+                deletionStatus = nil
+                problem = "Could not confirm deletion. \(error.localizedDescription) Refresh OpenCode before retrying."
+                openSettings?()
+            }
+        }
+    }
+    func forgetDeletedSessions(_ ids: Set<String>) {
+        deletedSessionIDs.formUnion(ids)
+        selected.subtract(ids)
+        pendingSessionIDs.subtract(ids)
+        sessions.removeAll { ids.contains($0.id) }
+        pending.removeAll { ids.contains($0.sessionID) }
+        history.removeAll { ids.contains($0.sessionID) }
+        working = working.filter { !ids.contains($0.key) }
+        if let current, ids.contains(current.sessionID) { self.current = nil }
+    }
     func open(_ session: Session) {
-        guard !openingSession else { return }
+        guard !openingSession, deletingSessionID == nil, !deletedSessionIDs.contains(session.id) else { return }
         openingSession = true
         let terminal = terminal
         routingStatus = "Opening session in \(terminal.rawValue)…"

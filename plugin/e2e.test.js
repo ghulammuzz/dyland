@@ -54,7 +54,34 @@ try {
   assert.ok(!JSON.stringify(read()).includes("Private form body"))
   await api(`/api/session/${sessionID}/form/${form.id}/reply`, "POST", { answer: { confirm: true } })
   await until(() => read()?.pending.length === 0 && read()?.notices.some((notice) => notice.kind === "resolved"))
-  console.log("OpenCode 2.1.1 E2E passed: active plugin, global session list, native form events, reply, private JSON")
+  const childSessionID = (await api("/api/session", "POST", {
+    title: "Dyland deletion child E2E", parentID: sessionID, location: { directory },
+  })).data.id
+  const children = await api(`/api/session?parentID=${sessionID}&limit=200`)
+  assert.ok(children.data.some((session) => session.id === childSessionID))
+  const active = await api("/api/session/active")
+  assert.ok(!active.data[sessionID] && !active.data[childSessionID])
+  const deletedID = sessionID
+  await api(`/api/session/${sessionID}`, "DELETE")
+  sessionID = undefined
+  await until(() => {
+    const snapshot = read()
+    return snapshot && !snapshot.sessions.some((session) => session.id === deletedID) &&
+      !snapshot.pending.some((pending) => pending.sessionID === deletedID)
+  })
+  const remaining = await api("/api/session?limit=200")
+  assert.ok(!remaining.data.some((session) => [deletedID, childSessionID].includes(session.id)))
+  if (process.env.DYLAND_DELETE_CHECK) {
+    const check = spawn(process.env.DYLAND_DELETE_CHECK, [], { stdio: "inherit", env: {
+      ...process.env, DYLAND_E2E_SERVER: url, OPENCODE_PASSWORD: password, DYLAND_E2E_DIRECTORY: directory,
+    } })
+    const code = await new Promise((resolve, reject) => {
+      check.once("error", reject)
+      check.once("exit", resolve)
+    })
+    assert.equal(code, 0, "Swift session deletion E2E must pass")
+  }
+  console.log("OpenCode 2.1.1 E2E passed: active plugin, global session list, native forms, private JSON, cascading deletion and bridge cleanup")
 } finally {
   if (sessionID) await api(`/api/session/${sessionID}`, "DELETE").catch(() => {})
   child.kill("SIGTERM")
