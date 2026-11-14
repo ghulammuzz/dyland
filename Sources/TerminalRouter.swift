@@ -3,6 +3,11 @@ import Darwin
 
 // Routes identify a TUI instance, never a title, cwd match, or frontmost terminal.
 actor TerminalRouter {
+    enum Terminal: String, CaseIterable {
+        case ghostty = "Ghostty"
+        case warp = "Warp"
+    }
+
     private static let shared = TerminalRouter()
     private var opening = false
     static let routes = Bridge.root.appendingPathComponent("routes", isDirectory: true)
@@ -24,22 +29,30 @@ actor TerminalRouter {
     }
 
     /// Status is user-visible: fallback opens another client, not the original terminal.
-    static func open(_ session: Session) async throws -> String {
-        try await shared.route(session)
+    static func open(_ session: Session, terminal: Terminal = .ghostty) async throws -> String {
+        try await shared.route(session, terminal: terminal)
     }
 
-    private func route(_ session: Session) async throws -> String {
+    private func route(_ session: Session, terminal: Terminal) async throws -> String {
         guard !opening else { throw Failure(message: "A session is still opening.") }
         opening = true
         defer { opening = false }
         return try await Task.detached(priority: .userInitiated) {
-            try Self.openOffMain(session)
+            try Self.openOffMain(session, terminal: terminal)
         }.value
     }
 
-    private static func openOffMain(_ session: Session) throws -> String {
+    private static func openOffMain(_ session: Session, terminal: Terminal) throws -> String {
         guard validSessionID(session.id), session.directory.hasPrefix("/"), !session.directory.contains("\0") else {
             throw Failure(message: "Invalid session ID or directory.")
+        }
+        if terminal == .warp {
+            let executable = try findOpenCode()
+            let response = try run(executable, ["api", "session.get", "--param", "sessionID=\(session.id)"], directory: session.directory)
+            guard validResponse(response, for: session) else {
+                throw Failure(message: "Session not found in the same local service. No new terminal was opened.")
+            }
+            return try openWarp(session, executable: executable)
         }
         try FileManager.default.createDirectory(at: routes, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let routeDirectory = try routes.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
@@ -89,6 +102,43 @@ actor TerminalRouter {
         return "A new Ghostty window was opened for this session; this is not the original terminal. The TUI plugin has not registered yet."
     }
 
+    static func warpConfig(_ session: Session, executable: String) throws -> String {
+        // Warp expands template expressions even inside quoted TOML strings.
+        guard !session.directory.contains("{{"), !executable.contains("{{") else {
+            throw Failure(message: "Warp paths cannot contain template expressions ({{).")
+        }
+        func quoted(_ value: String) throws -> String {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .withoutEscapingSlashes
+            return String(decoding: try encoder.encode(value), as: UTF8.self)
+        }
+        let command = [executable, "--session", session.id, session.directory].map(shellQuote).joined(separator: " ")
+        return """
+        name = "Dyland session"
+        [[panes]]
+        id = "session"
+        type = "terminal"
+        shell = "zsh"
+        directory = \(try quoted(session.directory))
+        commands = [\(try quoted(command))]
+        """
+    }
+
+    private static func openWarp(_ session: Session, executable: String) throws -> String {
+        let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".warp/tab_configs", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let values = try folder.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+        guard values.isSymbolicLink != true, values.isDirectory == true else {
+            throw Failure(message: "The Warp tab configs folder is not secure.")
+        }
+        let name = "dyland_\(session.id)"
+        let config = try warpConfig(session, executable: executable)
+        try writeData(Data(config.utf8), to: folder.appendingPathComponent("\(name).toml"))
+        _ = try run("/usr/bin/open", ["-b", "dev.warp.Warp-Stable", "warp://tab_config/\(name)"])
+        // shortcut: Warp has no Ghostty-style terminal UUID binding here; each click opens a tab.
+        return "A new Warp tab was requested for this session; existing tabs are not focused. Warp must support Tab Configs."
+    }
+
     private static func announcements() -> [Route] {
         let now = Date().timeIntervalSince1970
         return ((try? FileManager.default.contentsOfDirectory(at: routes, includingPropertiesForKeys: nil)) ?? []).compactMap { url in
@@ -109,8 +159,21 @@ actor TerminalRouter {
         return try? JSONDecoder().decode(T.self, from: data)
     }
     private static func write<T: Encodable>(_ value: T, to url: URL) throws {
-        try JSONEncoder().encode(value).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try writeData(JSONEncoder().encode(value), to: url)
+    }
+    private static func writeData(_ data: Data, to url: URL) throws {
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".dyland-\(UUID().uuidString).tmp")
+        let descriptor = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw Failure(message: "Could not create a private terminal config file.") }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: temporary)
+        }
+        try handle.write(contentsOf: data)
+        guard Darwin.rename(temporary.path, url.path) == 0 else {
+            throw Failure(message: "Could not publish the terminal config file.")
+        }
     }
     static func validResponse(_ response: String, for session: Session) -> Bool {
         guard let envelope = try? JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any],
@@ -166,7 +229,7 @@ actor TerminalRouter {
             Thread.sleep(forTimeInterval: 0.2)
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             process.waitUntilExit()
-            throw Failure(message: "The process timed out. Check OpenCode and Ghostty Automation permissions.")
+            throw Failure(message: "The process timed out. Check OpenCode, your selected terminal, and any required Automation permissions.")
         }
         process.waitUntilExit()
         let reader = try FileHandle(forReadingFrom: output)
@@ -218,6 +281,28 @@ actor TerminalRouter {
         precondition(validSessionID("ses_test-123"))
         precondition(!validSessionID("ses_bad\ninput"))
         precondition(!validSessionID("--session"))
+        let warp = try warpConfig(session, executable: "/opt/homebrew/bin/opencode")
+        precondition(warp.contains("directory = \"/test\""))
+        precondition(warp.contains("commands = [\"'/opt/homebrew/bin/opencode' '--session' 'ses_test' '/test'\"]"))
+        let unusual = Session(id: "ses_test", title: "Ignored {{title}}", directory: "/test/quote\"\\\n路径", updatedAt: 0)
+        let escaped = try warpConfig(unusual, executable: "/bin/opencode")
+        precondition(escaped.contains("directory = \"/test/quote\\\"\\\\\\n路径\""))
+        do {
+            _ = try warpConfig(Session(id: "ses_test", title: "", directory: "/test/{{param}}", updatedAt: 0), executable: "/bin/opencode")
+            preconditionFailure("Warp template paths must be rejected")
+        } catch is Failure {}
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("dyland-config-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let configFile = folder.appendingPathComponent("test.toml")
+        try writeData(Data(warp.utf8), to: configFile)
+        let written = try String(contentsOf: configFile, encoding: .utf8)
+        precondition(written == warp)
+        let permissions = try FileManager.default.attributesOfItem(atPath: configFile.path)[.posixPermissions] as? NSNumber
+        precondition(permissions?.intValue == 0o600)
+        try writeData(Data(escaped.utf8), to: configFile)
+        let replaced = try String(contentsOf: configFile, encoding: .utf8)
+        precondition(replaced == escaped)
         for value in ["", "plain", "a'b", "$(touch /never-run)", "line\nbreak", "路径 with spaces"] {
             let result = try run("/bin/sh", ["-c", "printf '%s' " + shellQuote(value)])
             precondition(result == value.trimmingCharacters(in: .whitespacesAndNewlines))

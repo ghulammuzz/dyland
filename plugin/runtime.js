@@ -70,11 +70,9 @@ export function startBridge(ctx, { home, heartbeat = 10_000, resync = 20_000 } =
         cursors.add(cursor)
       } while (records.size < 200 && cursors.size < 200 && !signal.aborted)
       if (signal.aborted) return
-      // Don't overwrite live events that arrived while the snapshot was loading.
-      if (revision === eventRevision) state.sessions = records
-      else for (const [id, record] of records) {
-        if (!state.sessions.has(id) && state.sessions.size < 200) state.sessions.set(id, record)
-      }
+      // Discard stale snapshots so deleted or moved sessions cannot reappear.
+      if (revision !== eventRevision) return
+      state.sessions = records
       for (const [id, pending] of state.pending) {
         if (state.sessions.get(pending.sessionID)?.directory !== ctx.location.directory) state.pending.delete(id)
       }
@@ -126,7 +124,16 @@ export function startBridge(ctx, { home, heartbeat = 10_000, resync = 20_000 } =
       try {
         const record = sessionRecord(await ctx.session.get({ sessionID }, requestOptions()))
         if (signal.aborted) return
-        if (!record || record.directory !== ctx.location.directory) return
+        if (!record) return
+        if (record.directory !== ctx.location.directory) {
+          if (known?.directory === ctx.location.directory) {
+            eventRevision++
+            state.sessions.delete(sessionID)
+            for (const [id, pending] of state.pending) if (pending.sessionID === sessionID) state.pending.delete(id)
+            schedule()
+          }
+          return
+        }
         if (!state.sessions.has(sessionID) && state.sessions.size >= 200) {
           const oldest = [...state.sessions.values()].reduce((a, b) => a.updatedAt < b.updatedAt ? a : b)
           state.sessions.delete(oldest.id)
@@ -161,7 +168,9 @@ export function startBridge(ctx, { home, heartbeat = 10_000, resync = 20_000 } =
           failures = 0
           // V2.1.1 Promise adapter ignores subscribe.types; filter again locally.
           if (!eventTypes.includes(event.type)) continue
-          if (event.location?.directory && event.location.directory !== ctx.location.directory) continue
+          if (event.location?.directory && event.location.directory !== ctx.location.directory &&
+              !(event.type === "session.moved" &&
+                state.sessions.get(event.data?.sessionID)?.directory === ctx.location.directory)) continue
           // Never retain prompt, answer, tool output, or error body in the queue.
           const data = event.data ?? {}
           queue.push({ id: event.id, type: event.type, created: event.created,

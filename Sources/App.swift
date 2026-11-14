@@ -7,7 +7,7 @@ final class IslandPanel: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model = Model()
     private var status: NSStatusItem!
     private var panel: IslandPanel!
@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalPointerMonitor: Any?
     private var localPointerMonitor: Any?
     private var topInset: CGFloat = 0
+    private var lastInside = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One menu-bar instance. Don't race bridge consumers or duplicate sounds.
@@ -25,14 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.openSettings = { [weak self] in self?.showSettings() }
         makeMenu()
         makePanel()
-        settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 530), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        settings.title = "Dyland"
-        settings.isReleasedWhenClosed = false
-        settings.contentView = NSHostingView(rootView: SettingsView(model: model))
-        settings.center()
-        settings.setFrameAutosaveName("DylandSettings")
         NotificationCenter.default.addObserver(self, selector: #selector(positionPanel), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(positionPanel), name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
         globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
             self?.updateHitRegion()
         }
@@ -43,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pointerTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateHitRegion() }
         }
+        pointerTimer?.tolerance = 0.02
         model.start()
         if !UserDefaults.standard.bool(forKey: "launched") {
             UserDefaults.standard.set(true, forKey: "launched")
@@ -99,10 +96,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         positionPanel()
         panel.orderFrontRegardless()
     }
+    @objc private func willSleep() {
+        model.suspendSpotify()
+        model.setHovered(false)
+    }
+    @objc private func didWake() {
+        positionPanel()
+        model.startSpotify()
+    }
     @objc private func positionPanel() {
         guard panel != nil, let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.screens.first else { return }
         let safeTop = screen.safeAreaInsets.top
-        model.notchHeight = safeTop > 0 ? safeTop : 8
+        model.hasNotch = safeTop > 0
+        model.notchHeight = safeTop > 0 ? safeTop : 0
         topInset = safeTop > 0 ? 0 : 6
         var centerX = screen.frame.midX
         model.notchWidth = 180
@@ -111,21 +117,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.notchWidth = max(180, right.minX - left.maxX)
         }
         let width = max(480, model.notchWidth + 112)
-        panel.setFrame(NSRect(x: centerX - width / 2, y: screen.frame.maxY - 190 - topInset, width: width, height: 190), display: true)
+        let height = max(300, model.notchHeight + 240)
+        panel.setFrame(NSRect(x: centerX - width / 2, y: screen.frame.maxY - height - topInset, width: width, height: height), display: true)
     }
     private func updateHitRegion() {
         guard let panel else { return }
-        let rect = NSRect(x: panel.frame.midX - model.islandWidth / 2, y: panel.frame.maxY - model.islandHeight, width: model.islandWidth, height: model.islandHeight)
+        let geometry = model.islandGeometry
+        let width = geometry?.width ?? model.islandWidth
+        let height = geometry?.height ?? model.islandHeight
+        let rect = NSRect(x: panel.frame.midX - width / 2, y: panel.frame.maxY - height, width: width, height: height)
         let pointer = NSEvent.mouseLocation
-        let inside = rect.contains(pointer)
-        model.setHovered(inside)
-        // Keep menu-bar clicks outside physical notch available to other apps.
-        let belowNotch = pointer.y < panel.frame.maxY - model.notchHeight
-        panel.ignoresMouseEvents = !inside || !belowNotch
+        guard rect.contains(pointer) else {
+            if model.hovered && Date().timeIntervalSince(lastInside) >= 0.18 { model.setHovered(false) }
+            if !panel.ignoresMouseEvents { panel.ignoresMouseEvents = true }
+            return
+        }
+        let local = CGPoint(x: pointer.x - rect.minX, y: rect.maxY - pointer.y)
+        var shape = IslandSilhouette(notched: model.hasNotch, expanded: model.expanded)
+        if let geometry { shape.shoulder = geometry.shoulder; shape.radius = geometry.radius }
+        let inside = shape.path(in: CGRect(origin: .zero, size: rect.size)).contains(local)
+        let now = Date()
+        if inside { lastInside = now }
+        model.setHovered(inside || (model.hovered && now.timeIntervalSince(lastInside) < 0.18))
+        let physicalNotch = model.hasNotch && pointer.y >= panel.frame.maxY - model.notchHeight && abs(pointer.x - panel.frame.midX) < model.notchWidth / 2
+        let ignoresMouse = !inside || physicalNotch
+        if panel.ignoresMouseEvents != ignoresMouse { panel.ignoresMouseEvents = ignoresMouse }
     }
     @objc func showSettings() {
-        settings?.makeKeyAndOrderFront(nil)
+        if settings == nil {
+            settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 660), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            settings.title = "Dyland"
+            settings.isReleasedWhenClosed = false
+            settings.delegate = self
+            settings.contentView = NSHostingView(rootView: SettingsView(model: model))
+            settings.center()
+            settings.setFrameAutosaveName("DylandSettings")
+        }
+        settings.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settings else { return }
+        window.contentView = nil
+        settings = nil
     }
     @objc private func preview() { model.preview() }
     @objc private func togglePause() { model.paused.toggle() }
@@ -140,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct Dyland {
     @MainActor static func main() {
-        if CommandLine.arguments.contains("--self-check") { selfCheck(); return }
+        if CommandLine.arguments.contains("--self-check") { spotifySelfCheck(); selfCheck(); return }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

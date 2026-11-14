@@ -126,6 +126,34 @@ func selfCheck() {
     let old = Notice(id: "4", sessionID: "ses_test", kind: "done", timestamp: now - 60)
     precondition(delivery.consume([snapshot([old])], selected: ["ses_test"], now: now).isEmpty)
     precondition(question.needsResponse && !done.needsResponse)
+    let idleSchedule = MascotSchedule(moving: false, paused: false)
+    var tick = 0.0
+    var frameCount = 0
+    while tick < 4.8 {
+        let next = idleSchedule.nextTick(after: tick)
+        precondition(next > tick)
+        tick = next
+        frameCount += 1
+    }
+    precondition(frameCount < 15, "Idle mascot must sleep between blinks")
+    precondition(Array(MascotSchedule(moving: false, paused: true).entries(from: Date(), mode: .normal)).count == 1)
+    precondition(abs(MascotSchedule(moving: true, paused: false).nextTick(after: 0) - 0.05) < 0.001)
+    for time in [4.36, 4.64, 4.8, 800_000_004.36] {
+        precondition(idleSchedule.nextTick(after: time) > time)
+    }
+    let workingMark = DylandMark(kind: "working")
+    precondition(workingMark.eyeHeight == 30)
+    precondition(abs(workingMark.eyes(at: 4.5, reducedMotion: false).height - 2) < 0.001)
+    precondition(workingMark.eyes(at: 1.5, reducedMotion: false).x == 3)
+    precondition(workingMark.eyes(at: 4.5, reducedMotion: true).height == 30)
+    precondition(workingMark.eyes(at: 1.5, reducedMotion: true).x == 0)
+    let attentiveEyes = DylandMark(kind: "working", attentive: true).eyes(at: 1.5, reducedMotion: false)
+    precondition(attentiveEyes.height == 32 && attentiveEyes.x == 0 && attentiveEyes.y == -3)
+    precondition(DylandMark(kind: "paused").eyes(at: 4.5, reducedMotion: false).height == 5)
+    precondition(DylandMark(kind: "done").eyeHeight == 5)
+    precondition(DylandMark(kind: "paused").eyeHeight == 5)
+    precondition(DylandMark(kind: "question").eyeHeight == 32)
+    precondition(DylandMark(kind: "permission").eyeHeight == 32)
     precondition(delivery.consume([], selected: ["ses_test"], now: now).isEmpty)
     var delayed = Delivery()
     _ = delayed.consume([], selected: ["ses_test"], now: now)
@@ -134,23 +162,55 @@ func selfCheck() {
     let defaults = UserDefaults.standard
     let saved = defaults.dictionaryRepresentation()
     let model = Model()
+    model.mascot = .ghost
+    precondition(Model().mascot == .ghost, "Mascot selection must survive restart")
+    precondition(DylandMark(kind: "working", style: .ghost).eyes(at: 4.5, reducedMotion: false).height == workingMark.eyes(at: 4.5, reducedMotion: false).height)
+    model.mascot = .hoodie
+    precondition(Model().mascot == .hoodie, "Hoodie selection must survive restart")
+    precondition(MascotStyle.allCases.count == 3)
+    precondition(DylandMark.hoodieImages.count == 2, "Original hoodie and blink artwork must be bundled")
+    precondition(DylandMark.hoodieImages.allSatisfy { abs($0.size.width / $0.size.height - 1000.0 / 1140.0) < 0.001 }, "Hoodie cutouts must keep matching, undistorted proportions")
+    let hoodie = DylandMark(kind: "working", style: .hoodie)
+    precondition(hoodie.eyes(at: 4.5, reducedMotion: false).height == workingMark.eyes(at: 4.5, reducedMotion: false).height)
+    precondition(hoodie.eyes(at: 4.5, reducedMotion: true).height == 30)
+    precondition(DylandMark(kind: "paused", style: .hoodie).eyes(at: 4.5, reducedMotion: false).height == 5)
+    model.mascot = .capsule
+    precondition(Model().mascot == .capsule)
     model.selected = ["ses_test"]
     model.sound = false
     precondition(!model.expanded && model.islandWidth == model.notchWidth)
     model.setHovered(true)
-    precondition(model.expanded && model.islandWidth == 440)
+    precondition(model.expanded && model.islandWidth == 420)
     model.setHovered(false)
     precondition(!model.expanded)
     model.current = Notice(id: "working-layout", sessionID: "ses_test", kind: "working", timestamp: now)
     precondition(model.compactWorking && model.islandHeight == model.notchHeight)
-    precondition(model.islandWidth == model.notchWidth + 72)
+    precondition(model.islandWidth == model.notchWidth + 100)
     model.setHovered(true)
-    precondition(!model.compactWorking && model.expanded && model.islandHeight == model.notchHeight + 100)
+    precondition(!model.compactWorking && model.expanded && model.islandHeight == model.notchHeight + 102)
     model.setHovered(false)
     precondition(model.compactWorking)
     model.notchHeight = 8
     precondition(model.islandHeight == 28)
+    model.setHovered(true)
+    precondition(model.islandHeight == 130)
+    model.setHovered(false)
     model.notchHeight = 32
+    model.hasNotch = false
+    precondition(model.islandHeight == 32 && model.islandWidth == 212)
+    model.setHovered(true)
+    precondition(model.islandHeight == 102 && model.islandWidth == 420)
+    model.setHovered(false)
+    model.hasNotch = true
+    let silhouetteBounds = CGRect(x: 0, y: 0, width: 420, height: 160)
+    let notched = IslandSilhouette(notched: true, expanded: true).path(in: silhouetteBounds)
+    precondition(notched.contains(CGPoint(x: 210, y: 16)))
+    precondition(notched.contains(CGPoint(x: 210, y: 150)))
+    precondition(!notched.contains(CGPoint(x: 1, y: 20)))
+    precondition(!notched.contains(CGPoint(x: 18, y: 159)))
+    let detached = IslandSilhouette(notched: false, expanded: false).path(in: CGRect(x: 0, y: 0, width: 212, height: 32))
+    precondition(detached.contains(CGPoint(x: 106, y: 16)))
+    precondition(!detached.contains(CGPoint(x: 1, y: 1)))
     model.preview()
     precondition(!model.compactWorking && model.expanded)
     model.updateExpansion(now: now + 4)
@@ -176,16 +236,50 @@ func selfCheck() {
     let active = Notice(id: "execution-start", sessionID: "ses_test", kind: "working", timestamp: now)
     model.apply(BridgeRead(snapshots: [snapshot([active])]))
     precondition(model.compactWorking)
+    precondition(model.workingCount == 1 && model.activity(for: "ses_test") == active)
+    var redraws = 0
+    let observation = model.objectWillChange.sink { redraws += 1 }
+    for _ in 0..<100 { model.apply(BridgeRead(snapshots: [snapshot([active])])) }
+    precondition(redraws == 0, "Unchanged bridge data must not redraw the UI")
+    observation.cancel()
     let completed = Notice(id: "execution-done", sessionID: "ses_test", kind: "done", timestamp: now)
     model.apply(BridgeRead(snapshots: [snapshot([active, completed])]))
     precondition(model.current == completed && model.expanded && !model.compactWorking)
     precondition(model.history.first == completed)
+    precondition(model.workingCount == 0 && model.activity(for: "ses_test") == completed)
     model.apply(BridgeRead(snapshots: [snapshot([active, completed])]))
     precondition(model.history.filter { $0.id == completed.id }.count == 1)
+    model.dismiss()
+    let waitingPermission = Notice(id: "working-permission", sessionID: "ses_test", kind: "permission", timestamp: now, requestID: "req_working")
+    model.apply(BridgeRead(snapshots: [Snapshot(version: 1, updatedAt: now, sessions: [], notices: [active, waitingPermission], pending: [waitingPermission])]))
+    precondition(model.current == waitingPermission)
+    precondition(model.attentionCount == 1 && model.activity(for: "ses_test") == waitingPermission)
+    let resolved = Notice(id: "working-resolved", sessionID: "ses_test", kind: "resolved", timestamp: now, requestID: "req_working")
+    model.apply(BridgeRead(snapshots: [snapshot([active, waitingPermission, resolved])]))
+    precondition(model.current == active && model.compactWorking)
+    precondition(model.attentionCount == 0)
+    model.apply(BridgeRead(snapshots: [snapshot([resolved])]))
+    precondition(model.activity(for: "ses_test")?.needsResponse != true)
+    for kind in ["done", "error", "interrupted"] {
+        model.dismiss()
+        let end = Notice(id: "terminal-\(kind)", sessionID: "ses_test", kind: kind, timestamp: now + 0.01)
+        model.apply(BridgeRead(snapshots: [snapshot([active, end])]))
+        precondition(model.current == end)
+    }
     model.paused = true
     model.apply(BridgeRead(snapshots: [snapshot([done])]))
     precondition(model.current == nil)
-    for key in ["sessions", "sound"] {
+    model.paused = false
+    model.selected = ["ses_test", "ses_second"]
+    let second = Notice(id: "second-agent", sessionID: "ses_second", kind: "working", timestamp: now + 1)
+    let unselected = Notice(id: "unselected-agent", sessionID: "ses_other", kind: "working", timestamp: now + 2)
+    model.apply(BridgeRead(snapshots: [snapshot([active, second, unselected])]))
+    precondition(model.islandNotices.count == 2 && model.workingCount == 2)
+    precondition(model.islandWidth == model.notchWidth + 128)
+    precondition(model.islandNotices.allSatisfy { model.selected.contains($0.sessionID) })
+    model.setHovered(true)
+    precondition(model.islandHeight == model.notchHeight + 146)
+    for key in ["sessions", "sound", "mascot"] {
         if let old = saved[key] { defaults.set(old, forKey: key) } else { defaults.removeObject(forKey: key) }
     }
     do { try TerminalRouter.selfCheck() }
